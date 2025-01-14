@@ -1,192 +1,202 @@
-import numpy as np
-import plotly.graph_objects as go
-from plotly.subplots import make_subplots
 import dash
 from dash import dcc, html
 from dash.dependencies import Input, Output, State
+import plotly.graph_objs as go
 
+# Default parameters (unchanged)
+default_params = {
+    'V': 5,
+    'Q_in_out': 0.1,
+    'lamda': 2.3e6,
+    'rho': 1000,
+    'Cp': 4200,
+    'Tin': 15,
+    'Tset': 40,
+    'Qmax': 10,
+    'Qmin': 0,
+    't_sim': 3600,
+    'Umax': 10,
+    'Umin': 0,
+    'Kp': 0.05,
+    'Tp': 0.1,
+    'Ti': 1,
+    'Td': 0.1
+}
 
-# Funkcja do symulacji
-def run_simulation(T_set, K_p, K_i, K_d):
-    A = 1.0  # Cross-sectional area of the tank (m^2)
-    rho = 997  # Density of the fluid (kg/m^3)
-    c_p = 4186  # Specific heat capacity of water (J/(kg·K))
-    F_in = 0.1  # Inlet flow rate (m^3/s)
-    F_out = 0.1  # Outlet flow rate (m^3/s)
-    T_in = 60  # Inlet temperature (°C)
-    T_out = 20  # Outlet temperature (°C)
-    t_p = 0.1  # Time step (s)
+# Simulation function (unchanged)
+def simulate_system(params):
+    V = params['V']
+    F_in_out = params['Q_in_out']
+    lamda = params['lamda']
+    rho = params['rho']
+    Cp = params['Cp']
+    T_in = params['Tin']
+    Tset = params['Tset']
+    Qmax = params['Qmax']
+    Qmin = params['Qmin']
+    end_time = params['t_sim']
+    Umax = params['Umax']
+    Umin = params['Umin']
+    K_p = params['Kp']
+    time_step = params['Tp']
+    T_i = params['Ti']
+    T_d = params['Td']
 
-    # Simulation parameters
-    end_time = 16000  # End time (s)
-    num_steps = int(end_time / t_p)  # Number of steps
-    time = np.arange(0, end_time, t_p)  # Time array
+    K_i = K_p * (time_step / T_i)
+    K_d = K_p * (T_d / time_step)
 
-    # Initialize arrays
-    T = np.zeros(num_steps)  # Temperature array
-    h = np.zeros(num_steps)  # Height array
-    error = np.zeros(num_steps)  # Error array
-    integral_error = 0  # Initialize integral error
-    previous_error = 0  # Initialize previous error for derivative calculation
+    T = [T_in]
+    t_time = [0]
+    Q = [0]
+    error = [Tset - T[0]]
+    integral_error = [0]
+    derivative_error = [0]
+    u = [0]
 
-    # Initial conditions
-    T[0] = T_out  # Initial temperature (°C)
-    h[0] = 1.0  # Initial height (m)
+    num_steps = int(end_time / time_step)
 
-    for n in range(num_steps - 1):
-        # uchyb regulacji
-        error[n] = T_set - T[n]
+    for n in range(1, num_steps + 1):
+        t_time.append(n * time_step)
+        error.append(Tset - T[-1])
+        integral_error.append(integral_error[-1] + error[-1] * time_step)
+        derivative_error.append((error[-1] - error[-2]) / time_step if n > 1 else 0)
 
-        # Integral term
-        integral_error += error[n] * t_p
+        u.append(K_p * error[-1] + K_i * integral_error[-1] + K_d * derivative_error[-1])
+        Q.append(min(Qmax, max(0, ((Qmax - Qmin) / (Umax - Umin)) * (u[-1] - Umin) + Qmin)))
 
-        # Derivative term
-        derivative_error = (error[n] - previous_error) / t_p if n > 0 else 0
-        previous_error = error[n]
+        T.append(T[-1] + (time_step / V) * ((lamda * Q[-1] / (rho * Cp)) + F_in_out * (T_in - T[-1])))
 
-        # PID control
-        Q = K_p * error[n] + K_i * integral_error + K_d * derivative_error
+    return t_time, T, Q
 
-        # Update temperature
-        dT = (F_in / rho) * (T_in - T[n]) + (Q / (rho * c_p)) - (F_out / rho) * (T[n] - T_out)
-        T[n + 1] = T[n] + dT * t_p
-
-        # Update height
-        h[n + 1] = h[n] + ((F_in - F_out) / A) * t_p
-
-    return time, T, h
-
-
-# Tworzenie aplikacji Dash
+# Dash app initialization
 app = dash.Dash(__name__)
 
-# Layout aplikacji
+# Layout of the app
 app.layout = html.Div([
-    html.H1("PID Control for Stirred Tank Heater"),
-
-    # Sliders for adjusting parameters
+    html.H1("Zbiornik ogrzewany parą wodną | Symulacja regulatora PID"),
     html.Div([
-        html.Label("Setpoint Temperature (°C)"),
-        dcc.Slider(
-            id='T_set_slider',
-            min=20,
-            max=90,
-            step=0.1,
-            value=99.5,
-            marks={i: f'{i}' for i in range(20, 101, 10)}
-        ),
-    ]),
+        html.Div([
+            html.Label("Wzmocnienie proporcjonalne (Kp):"),
+            dcc.Slider(
+                id='Kp-slider',
+                min=0.01,
+                max=1,
+                step=0.01,
+                value=default_params['Kp'],
+                marks={i/10: str(i/10) for i in range(11)}
+            ),
+            html.Label("Czas całkowania (Ti):"),
+            dcc.Slider(
+                id='Ti-slider',
+                min=0.1,
+                max=10,
+                step=0.1,
+                value=default_params['Ti'],
+                marks={i: str(i) for i in range(1, 11)}
+            ),
+            html.Label("Czas różniczkowania (Td):"),
+            dcc.Slider(
+                id='Td-slider',
+                min=0.01,
+                max=10,
+                step=0.1,
+                value=default_params['Td'],
+                marks={i: str(i) for i in range(1, 11)}
+            ),
+            html.Label("Temperatura zadana (Tset):"),
+            dcc.Slider(
+                id='Tset-slider',
+                min=10,
+                max=100,
+                step=1,
+                value=default_params['Tset'],
+                marks={i: str(i) for i in range(10, 101, 10)}
+            ),
+            html.Div([
+                html.Button('Uruchom symulację', id='run-button', style = {'visibility': 'hidden'}, n_clicks=0)
+            ]),
+            html.Div(id='current-slider-values', style={'margin-top': '20px', 'font-weight': 'bold'}),
+            html.Div(id='previous-slider-values', style={'margin-top': '10px'}),
+        ], style={'width': '30%', 'padding': '20px'}),
 
-    html.Div([
-        html.Label("Proportional Gain (K_p)"),
-        dcc.Slider(
-            id='K_p_slider',
-            min=1000,
-            max=10000,
-            step=100,
-            value=3200,
-            marks={i: f'{i}' for i in range(1000, 10001, 1000)}
-        ),
-    ]),
-
-    html.Div([
-        html.Label("Integral Gain (K_i)"),
-        dcc.Slider(
-            id='K_i_slider',
-            min=1,
-            max=50,
-            step=1,
-            value=7.7,
-            marks={i: f'{i}' for i in range(1, 51, 10)}
-        ),
-    ]),
-
-    html.Div([
-        html.Label("Derivative Gain (K_d)"),
-        dcc.Slider(
-            id='K_d_slider',
-            min=50000,
-            max=200000,
-            step=5000,
-            value=101000,
-            marks={i: f'{i}' for i in range(50000, 200001, 50000)}
-        ),
-    ]),
-
-    # Przyciski do uruchomienia symulacji
-    html.Div([
-        html.Button('Run Simulation', id='run_button', n_clicks=0),
-    ], style={'margin': '20px'}),
-
-    # Component to store the previous temperature
-    dcc.Store(id='T_previous_store', data=np.zeros(int(16000 / 0.1))),
-
-    # Graph for the simulation
-    dcc.Graph(id='simulation_graph'),
+        html.Div([
+            dcc.Graph(id='temp-graph'),
+            dcc.Graph(id='Q-graph'),
+        ], style={'width': '70%', 'padding': '20px'}),
+    ], style={'display': 'flex'}),
+    dcc.Store(id='previous-temp-data', data={'t': [], 'T': [], 'Tset': []}),
+    dcc.Store(id='previous-Q-data', data={'t': [], 'Q': []}),
+    dcc.Store(id='previous-slider-settings', data={'Kp': default_params['Kp'], 'Ti': default_params['Ti'], 'Td': default_params['Td'], 'Tset': default_params['Tset']}),
 ])
 
 
-# Callback to update the graph based on slider values and button click
 @app.callback(
-    [Output('simulation_graph', 'figure'),
-     Output('T_previous_store', 'data')],
-    [
-        Input('run_button', 'n_clicks'),
-    ],
-    [
-        State('T_set_slider', 'value'),
-        State('K_p_slider', 'value'),
-        State('K_i_slider', 'value'),
-        State('K_d_slider', 'value'),
-        State('T_previous_store', 'data')
-    ]
+    [Output('temp-graph', 'figure'),
+     Output('Q-graph', 'figure'),
+     Output('previous-temp-data', 'data'),
+     Output('previous-Q-data', 'data'),
+     Output('previous-slider-settings', 'data'),
+     Output('current-slider-values', 'children'),
+     Output('previous-slider-values', 'children')],
+    [Input('run-button', 'n_clicks')],
+    [Input('Kp-slider', 'value'),
+     Input('Ti-slider', 'value'),
+     Input('Td-slider', 'value'),
+     Input('Tset-slider', 'value')],
+    [State('previous-temp-data', 'data'),
+     State('previous-Q-data', 'data'),
+     State('previous-slider-settings', 'data')]
 )
-def update_graph(n_clicks, T_set, K_p, K_i, K_d, T_previous):
-    # Symulacja powinna zostać uruchomiona tylko po kliknięciu przycisku
-    if n_clicks == 0:
-        return go.Figure(), T_previous  # Zwracamy pusty wykres na początku, dopóki przycisk nie zostanie kliknięty
+def update_graphs(n_clicks, Kp, Ti, Td, Tset, previous_temp_data, previous_Q_data, previous_slider_settings):
+    params = default_params.copy()
+    params['Kp'] = Kp
+    params['Ti'] = Ti
+    params['Td'] = Td
+    params['Tset'] = Tset
 
-    # Uruchomienie symulacji z wybranymi parametrami po kliknięciu przycisku
-    time, T, h = run_simulation(T_set, K_p, K_i, K_d)
+    t_time, T, Q = simulate_system(params)
 
-    # Tworzenie wykresów (subplots)
-    fig = make_subplots(
-        rows=2, cols=1,  # 2 wiersze, 1 kolumna
-        subplot_titles=('Temperature in Stirred Tank Heater with PID Control', 'Liquid Height in Stirred Tank')
-    )
+    temp_fig = {
+        'data': [
+            go.Scatter(x=t_time, y=T, mode='lines', name='Temperatura (T)', line={'color': 'blue'}),
+            go.Scatter(x=t_time, y=[Tset] * len(t_time), mode='lines', name='Temperatura zadana (Tset)', line={'color': 'red', 'dash': 'dash'}),
+            go.Scatter(x=previous_temp_data['t'], y=previous_temp_data['T'], mode='lines', name='Poprzednia Temperatura (T)', line={'color': 'blue', 'dash': 'dot'}),
+            go.Scatter(x=previous_temp_data['t'], y=[previous_temp_data['Tset']] * len(previous_temp_data['t']), mode='lines', name='Poprzednia Temperatura Zadana (Tset)', line={'color': 'red', 'dash': 'dot'}),
+        ],
+        'layout': go.Layout(
+            title="Temperatura w czasie",
+            xaxis={'title': 'Czas (s)'},
+            yaxis={'title': 'Temperatura (°C)'},
+            template='plotly_white',
+            plot_bgcolor='white',
+            paper_bgcolor='white'
+        )
+    }
 
-    # Wykres poprzedniej temperatury
-    fig.add_trace(go.Scatter(x=time, y=T_previous, mode='lines', name='Previous temperature in tank (°C)',
-                             line=dict(color='blue', dash='dash')), row=1, col=1)
-    # Wykres temperatury
-    fig.add_trace(go.Scatter(x=time, y=T, mode='lines', name='Temperature in tank (°C)', line=dict(color='red')), row=1,
-                  col=1)
-    fig.add_trace(go.Scatter(x=time, y=[T_set] * len(time), mode='lines', name=f'Setpoint {T_set}°C',
-                             line=dict(color='green', dash='dash')), row=1, col=1)
+    Q_fig = {
+        'data': [
+            go.Scatter(x=t_time, y=Q, mode='lines', name='Przepływ ciepła (Q)', line={'color': 'green'}),
+            go.Scatter(x=previous_Q_data['t'], y=previous_Q_data['Q'], mode='lines', name='Poprzedni Przepływ ciepła (Q)', line={'color': 'green', 'dash': 'dot'}),
+        ],
+        'layout': go.Layout(
+            title="Przepływ ciepła w czasie",
+            xaxis={'title': 'Czas (s)'},
+            yaxis={'title': 'Przepływ ciepła (kg/s)'},
+            template='plotly_white',
+            plot_bgcolor='white',
+            paper_bgcolor='white'
+        )
+    }
 
-    # Wykres wysokości
-    fig.add_trace(go.Scatter(x=time, y=h, mode='lines', name='Height (m)', line=dict(color='blue')), row=2, col=1)
+    current_values = f"Aktualne wartości: Kp={Kp}, Ti={Ti}, Td={Td}, Tset={Tset}"
+    previous_values = f"Poprzednie wartości: Kp={previous_slider_settings['Kp']}, Ti={previous_slider_settings['Ti']}, Td={previous_slider_settings['Td']}, Tset={previous_slider_settings['Tset']}"
 
-    # Ustawienia układu wykresu
-    fig.update_layout(
-        height=800,  # Zwiększamy wysokość dla lepszej widoczności
-        title_text="Stirred Tank Heater with PID Control",
-        xaxis_title="Time (s)",
-        template='plotly_dark',
-        showlegend=True
-    )
-
-    # Etykiety osi dla wykresów
-    fig.update_xaxes(title_text="Time (s)", row=1, col=1)
-    fig.update_yaxes(title_text="Temperature (°C)", row=1, col=1)
-    fig.update_yaxes(title_text="Height (m)", row=2, col=1)
-
-    # Aktualizacja zmiennej T_previous
-    T_previous = T.copy()
-
-    return fig, T_previous
+    return (temp_fig, Q_fig, 
+            {'t': t_time, 'T': T, 'Tset': Tset}, 
+            {'t': t_time, 'Q': Q}, 
+            {'Kp': Kp, 'Ti': Ti, 'Td': Td, 'Tset': Tset}, 
+            current_values, previous_values)
 
 
-# Uruchomienie aplikacji Dash
 if __name__ == '__main__':
     app.run_server(debug=True)
